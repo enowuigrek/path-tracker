@@ -13,7 +13,7 @@ import { LatLng, Region } from 'react-native-maps';
 const { width: W, height: H } = Dimensions.get('window');
 
 // How many meters around each recorded point are revealed
-const REVEAL_RADIUS_M = 60;
+const REVEAL_RADIUS_M = 20;
 
 function latLngToPoint(coord: LatLng, region: Region): { x: number; y: number } {
   const x =

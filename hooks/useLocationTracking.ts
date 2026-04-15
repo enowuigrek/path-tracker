@@ -24,12 +24,14 @@ interface UseLocationTrackingResult {
   pathCoordinates: LatLng[];
   permissionStatus: PermissionStatus;
   distanceMeters: number;
+  heading: number | null; // degrees from north, clockwise; null = unavailable
 }
 
 export function useLocationTracking(): UseLocationTrackingResult {
   const [currentLocation, setCurrentLocation] = useState<LatLng | null>(null);
   const [pathCoordinates, setPathCoordinates] = useState<LatLng[]>([]);
   const [distanceMeters, setDistanceMeters] = useState(0);
+  const [heading, setHeading] = useState<number | null>(null);
   const [permissionStatus, setPermissionStatus] =
     useState<PermissionStatus>('undetermined');
 
@@ -57,7 +59,8 @@ export function useLocationTracking(): UseLocationTrackingResult {
   );
 
   useEffect(() => {
-    let subscription: Location.LocationSubscription | null = null;
+    let locationSub: Location.LocationSubscription | null = null;
+    let headingSub: Location.LocationSubscription | null = null;
 
     async function startTracking() {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -74,7 +77,7 @@ export function useLocationTracking(): UseLocationTrackingResult {
       });
       handleLocationUpdate(initial);
 
-      subscription = await Location.watchPositionAsync(
+      locationSub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 2000,
@@ -82,14 +85,22 @@ export function useLocationTracking(): UseLocationTrackingResult {
         },
         handleLocationUpdate,
       );
+
+      // Compass heading — works indoors too, uses device magnetometer
+      headingSub = await Location.watchHeadingAsync((data) => {
+        // trueHeading is -1 when unavailable, fall back to magnetic heading
+        const h = data.trueHeading >= 0 ? data.trueHeading : data.magHeading;
+        setHeading(h);
+      });
     }
 
     startTracking();
 
     return () => {
-      subscription?.remove();
+      locationSub?.remove();
+      headingSub?.remove();
     };
   }, [handleLocationUpdate]);
 
-  return { currentLocation, pathCoordinates, permissionStatus, distanceMeters };
+  return { currentLocation, pathCoordinates, permissionStatus, distanceMeters, heading };
 }
