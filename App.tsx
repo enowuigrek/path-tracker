@@ -7,27 +7,37 @@ import {
   ActivityIndicator,
   SafeAreaView,
   Platform,
+  Dimensions,
 } from 'react-native';
-import MapView, { Polyline, Marker, Region } from 'react-native-maps';
+import MapView, { Polyline, Region } from 'react-native-maps';
+import { LatLng } from 'react-native-maps';
 import { useLocationTracking } from './hooks/useLocationTracking';
 import { FogOfWar } from './components/FogOfWar';
 
 const ACCENT = '#3B82F6';
 const DEFAULT_DELTA = 0.002;
+const { width: W, height: H } = Dimensions.get('window');
 
 function formatDistance(meters: number): string {
   if (meters < 1000) return `${Math.round(meters)} m`;
   return `${(meters / 1000).toFixed(2)} km`;
 }
 
+// Convert lat/lng → screen pixel using the current map region
+function toScreenXY(coord: LatLng, region: Region) {
+  const x =
+    ((coord.longitude - (region.longitude - region.longitudeDelta / 2)) /
+      region.longitudeDelta) * W;
+  const y =
+    ((region.latitude + region.latitudeDelta / 2 - coord.latitude) /
+      region.latitudeDelta) * H;
+  return { x, y };
+}
+
+// Rendered as a plain View above the fog layer so it's never hidden
 function DirectionMarker({ heading }: { heading: number | null }) {
   return (
-    <View
-      style={[
-        styles.markerContainer,
-        { transform: [{ rotate: `${heading ?? 0}deg` }] },
-      ]}
-    >
+    <View style={[styles.markerContainer, { transform: [{ rotate: `${heading ?? 0}deg` }] }]}>
       <View style={styles.arrowHead} />
       <View style={styles.dot}>
         <View style={styles.dotInner} />
@@ -37,22 +47,16 @@ function DirectionMarker({ heading }: { heading: number | null }) {
 }
 
 export default function App() {
-  const {
-    currentLocation,
-    pathCoordinates,
-    permissionStatus,
-    distanceMeters,
-    heading,
-  } = useLocationTracking();
+  const { currentLocation, pathCoordinates, permissionStatus, distanceMeters, heading } =
+    useLocationTracking();
 
   const mapRef = useRef<MapView>(null);
   const [mapRegion, setMapRegion] = useState<Region | null>(null);
-
-  // When true the map follows the user automatically.
-  // Set to false as soon as the user drags or pinches.
   const [isFollowing, setIsFollowing] = useState(true);
 
-  // Remember the zoom level the user last set so we restore it on re-center.
+  // Tracks whether we started the current region animation programmatically.
+  // If onRegionChangeComplete fires while this is false → user gesture → stop following.
+  const isAnimatingRef = useRef(false);
   const userDeltaRef = useRef({ latitudeDelta: DEFAULT_DELTA, longitudeDelta: DEFAULT_DELTA });
 
   // Seed initial region
@@ -67,9 +71,10 @@ export default function App() {
     }
   }, [currentLocation, mapRegion]);
 
-  // Auto-follow — only when isFollowing, preserves the user's zoom level
+  // Auto-follow
   useEffect(() => {
     if (!isFollowing || !currentLocation || !mapRef.current) return;
+    isAnimatingRef.current = true;
     mapRef.current.animateToRegion(
       {
         latitude: currentLocation.latitude,
@@ -79,6 +84,9 @@ export default function App() {
       },
       400,
     );
+    // Clear flag after animation finishes + small buffer
+    const t = setTimeout(() => { isAnimatingRef.current = false; }, 500);
+    return () => clearTimeout(t);
   }, [currentLocation, isFollowing]);
 
   const handleRegionChange = useCallback((r: Region) => {
@@ -87,16 +95,11 @@ export default function App() {
 
   const handleRegionChangeComplete = useCallback((r: Region) => {
     setMapRegion(r);
-    // Save zoom so re-center restores it
-    userDeltaRef.current = {
-      latitudeDelta: r.latitudeDelta,
-      longitudeDelta: r.longitudeDelta,
-    };
-  }, []);
-
-  // User touched the map — stop following
-  const handlePanDrag = useCallback(() => {
-    setIsFollowing(false);
+    userDeltaRef.current = { latitudeDelta: r.latitudeDelta, longitudeDelta: r.longitudeDelta };
+    // If we didn't initiate this change, the user zoomed/panned → stop following
+    if (!isAnimatingRef.current) {
+      setIsFollowing(false);
+    }
   }, []);
 
   const handleReCenter = useCallback(() => {
@@ -129,15 +132,18 @@ export default function App() {
     );
   }
 
+  // Position of the user dot in screen coordinates (above the fog layer)
+  const markerPos = toScreenXY(currentLocation, mapRegion);
+
   return (
     <View style={styles.container}>
+      {/* Map */}
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
         initialRegion={mapRegion}
         onRegionChange={handleRegionChange}
         onRegionChangeComplete={handleRegionChangeComplete}
-        onPanDrag={handlePanDrag}
         showsUserLocation={false}
         showsMyLocationButton={false}
         showsCompass={false}
@@ -152,20 +158,23 @@ export default function App() {
             lineJoin="round"
           />
         )}
-
-        <Marker
-          coordinate={currentLocation}
-          anchor={{ x: 0.5, y: 0.5 }}
-          tracksViewChanges
-          zIndex={10}
-        >
-          <DirectionMarker heading={heading} />
-        </Marker>
       </MapView>
 
+      {/* Fog of war — covers the map */}
       <FogOfWar coordinates={pathCoordinates} region={mapRegion} />
 
-      {/* Top HUD — distance */}
+      {/* Direction marker rendered ABOVE fog so it's always visible */}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.markerAbsolute,
+          { left: markerPos.x - 20, top: markerPos.y - 20 },
+        ]}
+      >
+        <DirectionMarker heading={heading} />
+      </View>
+
+      {/* HUD */}
       <SafeAreaView style={styles.hudWrapper} pointerEvents="none">
         <View style={styles.hud}>
           <Text style={styles.hudLabel}>DYSTANS</Text>
@@ -173,7 +182,7 @@ export default function App() {
         </View>
       </SafeAreaView>
 
-      {/* Re-center button — appears when the user pans away */}
+      {/* Re-center button */}
       {!isFollowing && (
         <SafeAreaView style={styles.reCenterWrapper}>
           <TouchableOpacity style={styles.reCenterBtn} onPress={handleReCenter} activeOpacity={0.75}>
@@ -187,10 +196,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0B1120',
-  },
+  container: { flex: 1, backgroundColor: '#0B1120' },
 
   splash: {
     flex: 1,
@@ -199,25 +205,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 36,
   },
-  splashIcon: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
+  splashIcon: { fontSize: 48, marginBottom: 16 },
   splashTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#F1F5F9',
-    textAlign: 'center',
-    marginBottom: 10,
+    fontSize: 20, fontWeight: '700', color: '#F1F5F9',
+    textAlign: 'center', marginBottom: 10,
   },
   splashBody: {
-    fontSize: 14,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 22,
+    fontSize: 14, color: '#64748B', textAlign: 'center', lineHeight: 22,
   },
 
-  // --- direction marker ---
+  // Marker positioned absolutely above fog
+  markerAbsolute: {
+    position: 'absolute',
+    width: 40,
+    height: 40,
+  },
   markerContainer: {
     width: 40,
     height: 40,
@@ -227,92 +229,54 @@ const styles = StyleSheet.create({
   arrowHead: {
     position: 'absolute',
     top: 0,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderBottomWidth: 13,
+    width: 0, height: 0,
+    borderLeftWidth: 6, borderRightWidth: 6, borderBottomWidth: 13,
     borderStyle: 'solid',
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
     borderBottomColor: ACCENT,
   },
   dot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 22, height: 22, borderRadius: 11,
     backgroundColor: 'rgba(59,130,246,0.25)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
   dotInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: ACCENT,
-    borderWidth: 2.5,
-    borderColor: '#fff',
+    width: 12, height: 12, borderRadius: 6,
+    backgroundColor: ACCENT, borderWidth: 2.5, borderColor: '#fff',
   },
 
-  // --- HUD ---
+  // HUD
   hudWrapper: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
+    position: 'absolute', top: 0, left: 0, right: 0, alignItems: 'center',
   },
   hud: {
     marginTop: Platform.OS === 'ios' ? 12 : 40,
     backgroundColor: 'rgba(11, 17, 32, 0.82)',
     borderRadius: 20,
-    paddingHorizontal: 28,
-    paddingVertical: 12,
+    paddingHorizontal: 28, paddingVertical: 12,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
   },
   hudLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 2,
-    color: '#475569',
-    marginBottom: 2,
+    fontSize: 10, fontWeight: '700', letterSpacing: 2, color: '#475569', marginBottom: 2,
   },
   hudValue: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#F1F5F9',
-    letterSpacing: -0.5,
+    fontSize: 28, fontWeight: '800', color: '#F1F5F9', letterSpacing: -0.5,
   },
 
-  // --- re-center button ---
-  reCenterWrapper: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-  },
+  // Re-center
+  reCenterWrapper: { position: 'absolute', bottom: 0, right: 0 },
   reCenterBtn: {
     margin: 20,
     marginBottom: Platform.OS === 'ios' ? 36 : 20,
     backgroundColor: 'rgba(11, 17, 32, 0.88)',
     borderRadius: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingHorizontal: 18, paddingVertical: 12,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.4)',
+    borderWidth: 1, borderColor: 'rgba(59,130,246,0.4)',
   },
-  reCenterIcon: {
-    fontSize: 20,
-    color: ACCENT,
-    lineHeight: 24,
-  },
+  reCenterIcon: { fontSize: 20, color: ACCENT, lineHeight: 24 },
   reCenterLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: ACCENT,
-    letterSpacing: 0.5,
-    marginTop: 2,
+    fontSize: 11, fontWeight: '700', color: ACCENT, letterSpacing: 0.5, marginTop: 2,
   },
 });

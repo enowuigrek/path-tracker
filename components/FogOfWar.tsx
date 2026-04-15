@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Dimensions, StyleSheet } from 'react-native';
+import { Dimensions, StyleSheet, View } from 'react-native';
 import Svg, {
   Rect,
   Circle,
@@ -46,12 +46,12 @@ export function FogOfWar({ coordinates, region }: Props) {
   );
 
   return (
+    // View wrapper is the correct way to block touches in React Native
+    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
     <Svg
       style={StyleSheet.absoluteFillObject}
       width={W}
       height={H}
-      // @ts-ignore – pointerEvents not in SVG types but works on native
-      pointerEvents="none"
     >
       <Defs>
         {/*
@@ -99,5 +99,6 @@ export function FogOfWar({ coordinates, region }: Props) {
         mask="url(#fog-mask)"
       />
     </Svg>
+    </View>
   );
 }
